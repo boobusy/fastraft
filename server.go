@@ -21,4 +21,60 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package internal
+package fastraft
+
+import (
+	"bufio"
+	"net"
+	"net/http"
+)
+
+type RaftServerFunc func(node *Node) error
+
+func RaftHttpServer(node *Node) error {
+
+	http.HandleFunc("/set", func(writer http.ResponseWriter, request *http.Request) {
+
+		body := make([]byte, request.ContentLength)
+		_, err := request.Body.Read(body)
+		if err != nil {
+			writer.Write([]byte("fail"))
+		} else {
+			node.raftEntries.AddEntries(string(body))
+			writer.Write([]byte("success"))
+		}
+	})
+	return http.ListenAndServe(node.address, nil)
+}
+
+func RaftTcpServer(node *Node) error {
+
+	l, err := net.Listen("tcp", node.address)
+	if err != nil {
+		return err
+	}
+	defer l.Close()
+
+	for {
+
+		conn, err := l.Accept()
+		if err != nil {
+			node.logger.Error(err)
+			continue
+		}
+
+		go func(c net.Conn) {
+			defer c.Close()
+
+			r := bufio.NewReader(c)
+			for {
+				bytes, _, err := r.ReadLine()
+				if err != nil {
+					return
+				}
+				node.raftEntries.AddEntries(string(bytes))
+			}
+
+		}(conn)
+	}
+}
