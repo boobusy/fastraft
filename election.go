@@ -1,7 +1,30 @@
+//
+// MIT License
+//
+// # Copyright (c) 2021 Robert boobusy
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 package fastraft
 
 import (
-	"log"
+	"fmt"
 	"math/rand"
 	"sync/atomic"
 	"time"
@@ -11,8 +34,8 @@ import (
 // @Description: Election Module
 type raftElection struct {
 	*Node
-	term atomic.Int32
-	vote atomic.Int32
+	term atomic.Uint32
+	vote atomic.Uint32
 	role RoleType
 
 	eTimeoutMsFunc  func() time.Duration
@@ -115,9 +138,9 @@ func (e *raftElection) eTimeoutReset() {
 
 // raftPing
 // @receiver e
-func (e *raftElection) raftPing() {
+func (e *raftElection) raftPing(first bool) {
 
-	e.log(time.Now().Format(time.StampMilli) + " send ping")
+	e.debug(time.Now().Format(time.StampMilli) + " send ping")
 	e.pingTime = time.Now().UnixMicro()
 	req := &RpcRequest{
 		Ping: &RequestPing{
@@ -126,14 +149,18 @@ func (e *raftElection) raftPing() {
 		},
 	}
 
-	e.raftRpcServer.sendSignal(req, e.Nodes(), false, e.rpcPingCallBack)
+	if first {
+		req.Ping.First = &FirstPing{NextIndex: e.nextIndex.Load()}
+	}
+
+	e.raftRpcServer.sendAsyncSignal(req, e.Nodes(), false, e.rpcPingCallBack)
 }
 
 // rpcPingCallBack
 // @receiver e
 // @param sNode
 // @param res
-func (e *raftElection) rpcPingCallBack(sNode *SlaveNode, res *RpcResponse) {
+func (e *raftElection) rpcPingCallBack(sNode *SlaveNode, err error, res *RpcResponse) {
 
 	if res.Pong == nil {
 		return
@@ -161,6 +188,12 @@ func (e *raftElection) receivePingCallBack(ping *RequestPing, pong *ResponsePong
 // @receiver e
 func (e *raftElection) raftRequestVote() {
 
+	// only one node,check leader.
+	if len(e.nodes) == 0 {
+		e.eleSignalChan <- &Signal{BeLeaderSignal, nil}
+		return
+	}
+
 	team := e.term.Load()
 
 	req := &RpcRequest{
@@ -171,16 +204,16 @@ func (e *raftElection) raftRequestVote() {
 		},
 	}
 
-	e.log("data: ", e.address, "team = ", req.Vote.Term, "logindex = ", req.Vote.LastLogIndex, "logteam = ", req.Vote.LastLogTerm)
+	e.debug("data: ", e.address, "team = ", req.Vote.Term, "logindex = ", req.Vote.LastLogIndex, "logteam = ", req.Vote.LastLogTerm)
 
 	// failed retry
 	nodesReq := e.getNewNodeReqs()
 	for team == e.term.Load() {
 
 		// send requestVote
-		et := e.raftRpcServer.sendSignal(req, nodesReq, true, e.requestVoteCallBack)
+		et := e.raftRpcServer.sendAsyncSignal(req, nodesReq, true, e.requestVoteCallBack)
 
-		// check leader
+		// check leader.
 		if e.checkVoteResult(0) {
 			break
 		}
@@ -197,7 +230,7 @@ func (e *raftElection) raftRequestVote() {
 // @receiver e
 // @param sNode
 // @param res
-func (e *raftElection) requestVoteCallBack(sNode *SlaveNode, res *RpcResponse) {
+func (e *raftElection) requestVoteCallBack(sNode *SlaveNode, err error, res *RpcResponse) {
 
 	if res.Vote == nil {
 		return
@@ -208,7 +241,7 @@ func (e *raftElection) requestVoteCallBack(sNode *SlaveNode, res *RpcResponse) {
 		return
 	}
 
-	if e.checkVoteResult(int32(res.Vote.Granted)) {
+	if e.checkVoteResult(uint32(res.Vote.Granted)) {
 		e.eleSignalChan <- &Signal{BeLeaderSignal, nil}
 	} else {
 		e.eleSignalChan <- &Signal{BadLeaderSignal, res.Vote.Team}
@@ -223,53 +256,56 @@ func (e *raftElection) requestVoteCallBack(sNode *SlaveNode, res *RpcResponse) {
 func (e *raftElection) receiveVoteCallBack(vote *RequestVote, resVote *ResponseVote) {
 
 	// once vote
-	if vote.Term > e.term.Load() {
-		e.term.Store(vote.Term)
+	team := e.term.Load()
+	if vote.Term > team && e.term.CompareAndSwap(team, vote.Term) {
 
-		// check logindex & logteam
+		// check logIndex & logTeam
 		if vote.LastLogIndex >= e.lastLogIndex && vote.LastLogTerm >= e.lastLogTeam {
 			e.eTimeoutReset()
 
-			// 赞成票就和leader的nextIndex保持一致
+			// consistent with leader nextIndex.
+			// prevention node try.
 			e.nextIndex.Store(vote.LastLogIndex + 1)
 
-			resVote.Granted = 1
+			// send VoteSignal
 			e.eleSignalChan <- &Signal{AgreeVoteSignal, nil}
 
-		} else {
-			resVote.Granted = 0
-			e.log("granted flase")
+			resVote.Granted = 1
 		}
-	}
 
-	resVote.Team = e.term.Load()
+		resVote.Team = vote.Term
+
+	} else {
+		resVote.Granted = 0
+		resVote.Team = team
+	}
 }
 
 // checkVoteResult
 // @receiver e
 // @param vote
 // @return bool
-func (e *raftElection) checkVoteResult(vote int32) bool {
+func (e *raftElection) checkVoteResult(vote uint32) bool {
 
 	e.vote.Add(vote)
-	return e.vote.Load() > e.halfLen()
+	return e.vote.Load() > uint32(e.halfLen())
 }
 
-// log
+// debug log
 // @receiver e
 // @param msg
-func (e *raftElection) log(msg ...any) {
+func (e *raftElection) debug(msg ...any) {
 
 	var role string
 	switch e.role {
 	case LeaderRole:
-		role = "领导者"
+		role = "Leader"
 	case CandidateRole:
-		role = "候选者"
+		role = "Candidate"
 	case FollowerRole:
-		role = "跟谁者"
+		role = "Follower"
 	}
-	log.Println(e.address, role, msg)
+	e.logger.Debug(e.address, role, msg)
 }
 
 // election start
@@ -294,6 +330,23 @@ func (e *raftElection) start() {
 	// avoid two trigger
 	e.heartbeat.Stop()
 
+	go func() {
+		for {
+			time.Sleep(10 * time.Second)
+			fmt.Println(e.name, e.commitIndex.Load(), len(e.pEntries))
+
+			/*
+				str := fmt.Sprintf("%s %d", e.name+": ", e.commitIndex.Load())
+				for _, entries := range e.pEntries {
+					str += fmt.Sprintf(" %+v", entries)
+				}
+				fmt.Println(str)
+
+			*/
+		}
+
+	}()
+
 	for true {
 
 		for e.role == LeaderRole {
@@ -302,7 +355,7 @@ func (e *raftElection) start() {
 			case signal := <-e.eleSignalChan:
 				switch signal.SignalType {
 				case BeLeaderSignal:
-					e.log("be leader")
+					e.debug("be leader")
 
 				// 有时leader也会受到投票请求
 				case AgreeVoteSignal:
@@ -310,7 +363,7 @@ func (e *raftElection) start() {
 					e.heartbeat.Stop()
 
 				case SendFirstPingSignal:
-					go e.raftPing()
+					e.raftPing(true)
 					e.heartbeat.Reset(e.heartbeatMs * time.Millisecond)
 					e.logSignalChan <- &Signal{EntriesCheckSignal, nil}
 
@@ -320,10 +373,15 @@ func (e *raftElection) start() {
 					if ping.Team > e.term.Load() {
 						e.role = FollowerRole
 						e.term.Store(ping.Team)
-						e.log("leader ping, update Role")
+						e.debug("leader ping, update Role")
 						e.pingTime = ping.Time
 						e.pongTime = time.Now().UnixMicro()
-						e.logSignalChan <- &Signal{EntriesQuitSyncSignal, nil}
+
+						// init nextIndex
+						if ping.First != nil {
+							e.nextIndex.Store(ping.First.NextIndex)
+						}
+						//e.logSignalChan <- &Signal{EntriesQuitSyncSignal, nil}
 					}
 
 				case QuitSignal:
@@ -332,7 +390,7 @@ func (e *raftElection) start() {
 
 			// start ping
 			case <-e.heartbeat.C:
-				go e.raftPing()
+				go e.raftPing(false)
 			}
 			//e.eTimeoutReset()
 		}
@@ -347,18 +405,18 @@ func (e *raftElection) start() {
 					e.role = CandidateRole
 					e.term.Add(1)
 					e.vote.Store(1)
-					e.log(time.Now().Format(time.StampMilli) + "start election")
+					e.debug(time.Now().Format(time.StampMilli) + " start election")
 					go e.raftRequestVote()
 
 				case BadLeaderSignal:
-					team := signal.Data.(int32)
+					team := signal.Data.(uint32)
 					if e.term.Load() < team {
 						e.term.Store(team)
 					}
 
 				case BeLeaderSignal:
 					e.role = LeaderRole
-					e.log(" CandidateRole BeLeader")
+					e.debug(" CandidateRole BeLeader")
 					e.eleSignalChan <- &Signal{SendFirstPingSignal, nil}
 					// try leader exit
 					/*
@@ -374,7 +432,14 @@ func (e *raftElection) start() {
 						e.role = FollowerRole
 						e.term.Store(ping.Team)
 					}
-					e.log("re leader ping")
+
+					// init nextIndex
+					if ping.First != nil {
+						e.nextIndex.Store(ping.First.NextIndex)
+						fmt.Println(e.name+" index = ", e.nextIndex.Load())
+					}
+
+					e.debug("re leader ping")
 					e.pingTime = ping.Time
 					e.pongTime = time.Now().UnixMicro()
 

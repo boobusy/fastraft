@@ -21,9 +21,49 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package internal
+package fastraft
 
-type Exchange interface {
-	Replication() bool
-	Vote()
+import (
+	"fmt"
+	"log"
+)
+
+type Logger interface {
+	Debug(...any)
+	Info(...any)
+	Warn(...any)
+	Error(...any)
+	Panic(...any)
+}
+
+type logger struct {
+	*log.Logger
+}
+
+func DefaultLogger() Logger {
+	l := new(logger)
+	l.Logger = log.Default()
+	return l
+}
+
+func (l *logger) Debug(args ...any) {
+	l.Print("debug ", " ", fmt.Sprintln(args...))
+}
+
+func (l *logger) Info(args ...any) {
+	l.Print("info", " ", fmt.Sprintln(args...))
+}
+
+func (l *logger) Warn(args ...any) {
+	l.Print("warn ", " ", fmt.Sprintln(args...))
+}
+
+func (l *logger) Error(args ...any) {
+	l.Print("error", " ", fmt.Sprintln(args...))
+}
+
+// Panic exit process
+func (l *logger) Panic(args ...any) {
+	l.Print("panic", " ", fmt.Sprintln(args...))
+	panic("")
 }

@@ -1,11 +1,36 @@
+//
+// MIT License
+//
+// # Copyright (c) 2021 Robert boobusy
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 package fastraft
 
-import (
-	"bufio"
-	"log"
-	"net"
-	//github.com/facebookgo/inject
-)
+type INode interface {
+	Node() *Node
+
+	AddEntries(any)
+	GetEntries(any)
+	UpdateEntries(any)
+	DelEntries(any)
+}
 
 // Node
 // @Description:
@@ -14,42 +39,49 @@ type Node struct {
 	*raftEntries
 	*raftRpcServer
 	*SlaveNode
+	*Option
 	nodes        []*SlaveNode
-	address      string
-	inAddress    string
-	status       int
 	nodeQuitChan NullChan
 }
 
-// NewNode
+func NewNode() *Node {
+
+	return defaultNode(options)
+}
+
+// NewNodeAddress
 // @param name
 // @param address
 // @return *Node
-func NewNode(name string, address string) *Node {
+func NewNodeAddress(name, address string) *Node {
 
-	addr, err := net.ResolveTCPAddr("tcp", address)
-	if err != nil {
-		panic(err)
-	}
-
-	inAddr := *addr
-	inAddr.Port += 10000
-	node := defaultNode()
+	opt := *options
+	opt.address = address
+	node := defaultNode(options)
 	node.name = name
-	node.address = addr.String()
-	node.inAddress = inAddr.String()
-	node.raftElection = NewElection(node)
-	node.raftEntries = NewRaftEntries(node)
-	node.raftRpcServer = NewRaftServer(node)
 	return node
+}
+
+// NewNodeOption
+// @param name
+// @param opt
+// @return *Node
+func NewNodeOption(opt *Option) *Node {
+
+	return defaultNode(opt)
 }
 
 // defaultNode
 // @return *Node
-func defaultNode() *Node {
+func defaultNode(opt *Option) *Node {
 	node := new(Node)
+	node.Option = opt
+	node.name = opt.getName()
 	node.SlaveNode = new(SlaveNode)
 	node.nodes = make([]*SlaveNode, 0)
+	node.raftElection = NewElection(node)
+	node.raftEntries = NewRaftEntries(node)
+	node.raftRpcServer = NewRaftServer(node)
 	return node
 }
 
@@ -113,6 +145,7 @@ func (node *Node) getNodeByName(name string) *SlaveNode {
 func (e *Node) DebugAddEntries(data any, team uint32) {
 	entries := &Entries{
 		Commited: false,
+		CommitN:  1,
 		Team:     team,
 		Data:     data,
 	}
@@ -132,40 +165,8 @@ func (node *Node) Run() {
 	node.eleSignalChan <- &Signal{StartSignal, nil}
 	node.logSignalChan <- &Signal{StartSignal, nil}
 
-	l, _ := net.Listen("tcp", node.address)
-	defer l.Close()
-
-	for {
-
-		conn, err := l.Accept()
-
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-
-		go func(c net.Conn) {
-			defer c.Close()
-
-			r := bufio.NewReader(c)
-
-			for {
-				bytes, _, err := r.ReadLine()
-				if err != nil {
-					return
-				}
-
-				node.raftEntries.AddEntries(string(bytes))
-			}
-
-		}(conn)
+	err := node.serverFunc(node)
+	if err != nil {
+		node.logger.Panic(err)
 	}
-
-	/*
-		go func() {
-			time.Sleep(5 * time.Second)
-			node.SignalChan <- &Signal{QuitSignal, nil}
-		}()
-
-	*/
 }

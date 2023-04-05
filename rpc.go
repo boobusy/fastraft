@@ -1,7 +1,25 @@
-// Created by GoLand
-// User: boobusy.
-// Date: 2023/03/25 20:43
-// Email : boobusy@gmail.com
+//
+// MIT License
+//
+// # Copyright (c) 2021 Robert boobusy
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 package fastraft
 
@@ -43,7 +61,7 @@ func NewRaftServer(node *Node) *raftRpcServer {
 		}
 		s.listen = l
 
-		// 使用的 gob. 简短方式 	rpcSer.Accept(l)
+		// use gob. rpcSer.Accept(l)
 		for {
 			conn, err := l.Accept()
 			if err != nil {
@@ -79,6 +97,15 @@ func (s *raftRpcServer) Signal(req *RpcRequest, res *RpcResponse) error {
 	// 模拟超时
 	//time.Sleep(3011 * time.Millisecond)
 
+	/*
+		defer func() {
+			if err := recover(); err != nil {
+				res.Error = fmt.Sprintf("%s", err)
+			}
+		}()
+
+	*/
+
 	switch true {
 	case req.Ping != nil:
 		res.Pong = &ResponsePong{}
@@ -96,14 +123,14 @@ func (s *raftRpcServer) Signal(req *RpcRequest, res *RpcResponse) error {
 	return nil
 }
 
-// sendSignal
+// sendAsyncSignal
 // @receiver s
 // @param req
 // @param nodes
 // @param retry
 // @param rpcCallBack
 // @return time.Duration
-func (s *raftRpcServer) sendSignal(req *RpcRequest, nodes []*SlaveNode, retry bool, rpcCallBack func(*SlaveNode, *RpcResponse)) time.Duration {
+func (s *raftRpcServer) sendAsyncSignal(req *RpcRequest, nodes []*SlaveNode, retry bool, rpcCallBack func(*SlaveNode, error, *RpcResponse)) time.Duration {
 
 	wg := new(sync.WaitGroup)
 	st := time.Now()
@@ -119,18 +146,40 @@ func (s *raftRpcServer) sendSignal(req *RpcRequest, nodes []*SlaveNode, retry bo
 			var res RpcResponse
 			err := nReq.client.Request("RpcServer.Signal", req, &res)
 			if err != nil {
-				//fmt.Println("client err ", err)
 				nReq.lastReq = false
 			} else {
 				nReq.lastReq = true
 			}
 
-			rpcCallBack(node, &res)
+			rpcCallBack(node, err, &res)
 			wg.Add(-1)
 
 		}(node)
 	}
 	wg.Wait()
+
+	return time.Duration(time.Now().Sub(st).Milliseconds())
+}
+
+// sendSyncSignal
+// @receiver s
+// @param req
+// @param node
+// @param rpcCallBack
+// @return time.Duration
+func (s *raftRpcServer) sendSyncSignal(req *RpcRequest, node *SlaveNode, rpcCallBack func(*SlaveNode, error, *RpcResponse)) time.Duration {
+
+	st := time.Now()
+	var res RpcResponse
+	err := node.client.Request("RpcServer.Signal", req, &res)
+
+	if err != nil {
+		node.lastReq = false
+	} else {
+		node.lastReq = true
+	}
+
+	rpcCallBack(node, err, &res)
 
 	return time.Duration(time.Now().Sub(st).Milliseconds())
 }
