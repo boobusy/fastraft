@@ -24,7 +24,6 @@
 package fastraft
 
 import (
-	"fmt"
 	"sync/atomic"
 	"time"
 )
@@ -121,10 +120,6 @@ func (e *raftEntries) _CommitEntries(cIndex uint32) {
 	}
 
 	// Commit Entries
-	if e.name == ":9135" {
-		fmt.Println("cimut ud = ", ics, ice, len(e.pEntries))
-	}
-
 	for _, entries := range e.pEntries[ics:ice] {
 		entries.Commited = true
 		entries.CommitN++
@@ -173,10 +168,6 @@ func (e *raftEntries) raftAppendEntries(logNode *LogSyncNode) {
 			goto Quit
 
 		default:
-
-			// 9135 matchindex = 0,  需要同步 下标0
-			// 9137 matchindex = 1 , 需要同步 下标2
-			// 9137 matchindex = 2 , 需要同步 下标3
 
 			if !logNode.lastReq {
 				<-time.After(e.heartbeatMs * time.Millisecond)
